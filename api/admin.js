@@ -13,7 +13,7 @@ export default async function handler(req, res) {
 const f=document.getElementById('f'),out=document.getElementById('out');
 f.addEventListener('submit',async e=>{e.preventDefault();
  const data=Object.fromEntries(new FormData(f).entries());
- const r=await fetch('/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+ const r = await fetch('/api/create', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
  out.textContent=JSON.stringify(await r.json(),null,2);
 });
 </script></body></html>`);
