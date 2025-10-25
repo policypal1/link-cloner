@@ -1,21 +1,50 @@
 import { kv } from '../lib/kv.js';
 import { parseDevice, hashIp, privacySignals, getIp } from '../lib/util.js';
 
+async function sendWebhook(ev, id, link) {
+  const hook = process.env.DISCORD_WEBHOOK_URL;
+  if (!hook) return;
+  try {
+    await fetch(hook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: undefined,
+        embeds: [{
+          title: 'Click recorded',
+          description: `**Short:** https://${process.env.VERCEL_URL || ''}/${id}\n**Target:** <${link.url}>`,
+          fields: [
+            { name: 'Device', value: String(ev.device || 'unknown'), inline: true },
+            { name: 'Time',   value: new Date(ev.ts).toISOString(), inline: true }
+          ],
+          footer: { text: 'Privacy: no IP, no identifiers. GPC/DNT honored.' }
+        }]
+      })
+    });
+  } catch { /* ignore webhook errors */ }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).send('Method not allowed');
+
   const { id } = req.query;
   const link = await kv.get(`links:${id}`);
   if (!link) return res.status(404).send('Not found');
 
+  // Honor GPC/DNT: skip logging & notifications
   if (privacySignals(req)) {
     res.writeHead(302, { Location: link.url }); return res.end();
   }
 
-  const cookies = Object.fromEntries((req.headers.cookie || '')
-    .split(';').map(c => c.trim().split('=')).filter(([k]) => k));
+  // Has the user consented?
+  const cookies = Object.fromEntries(
+    (req.headers.cookie || '')
+      .split(';').map(c => c.trim().split('=')).filter(([k]) => k)
+  );
   const consent = cookies['analytics_consent'] === '1';
 
   if (consent) {
+    // Log minimized event
     const ev = {
       ts: Date.now(),
       device: parseDevice(req.headers['user-agent'] || ''),
@@ -23,10 +52,14 @@ export default async function handler(req, res) {
       ipHash: hashIp(getIp(req))
     };
     await kv.rpush(`events:${id}`, JSON.stringify(ev));
+
+    // Notify Discord
+    await sendWebhook(ev, id, link);
+
     res.writeHead(302, { Location: link.url }); return res.end();
   }
 
-  // interstitial
+  // No consent yet — show interstitial
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.end(`
 <!doctype html><html><head><meta charset="utf-8"/>
@@ -45,7 +78,7 @@ button{padding:10px 16px;border-radius:8px;border:1px solid #ddd;background:#fff
 <p style="color:#666;font-size:12px;margin-top:10px;">Revoke later by clearing this cookie.</p>
 </div>
 <script>
-async function allow(){await fetch('/consent/${id}',{method:'POST',credentials:'include'});location.href=${JSON.stringify(link.url)}}
+async function allow(){await fetch('/api/consent/${id}',{method:'POST',credentials:'include'});location.href=${JSON.stringify(link.url)}}
 function decline(){location.href=${JSON.stringify(link.url)}}
 </script></body></html>`);
 }
