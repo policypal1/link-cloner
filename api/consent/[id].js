@@ -2,9 +2,10 @@ import { kv } from '../../lib/kv.js';
 import { parseDevice, hashIp, getIp } from '../../lib/util.js';
 import { serialize } from 'cookie';
 
-async function sendWebhook(ev, id, link) {
+async function notifyClick({ id, link, ev, req }) {
   const hook = process.env.DISCORD_WEBHOOK_URL;
   if (!hook) return;
+  const lang = (req.headers['accept-language'] || '').split(',')[0] || 'unknown';
   try {
     await fetch(hook, {
       method: 'POST',
@@ -12,16 +13,18 @@ async function sendWebhook(ev, id, link) {
       body: JSON.stringify({
         embeds: [{
           title: 'New consented click',
-          description: `**Short:** https://${process.env.VERCEL_URL || ''}/${id}\n**Target:** <${link.url}>`,
+          description: `**Short:** ${req.headers['x-forwarded-proto'] || 'https'}://${req.headers['x-forwarded-host'] || req.headers.host}/api/${id}\n**Target:** <${link.url}>`,
           fields: [
-            { name: 'Device',   value: String(ev.device || 'unknown'), inline: true },
-            { name: 'Time',     value: new Date(ev.ts).toISOString(), inline: true }
+            { name: 'Device',  value: String(ev.device || 'unknown'), inline: true },
+            { name: 'Lang',    value: lang, inline: true },
+            { name: 'Referrer',value: ev.referer || '—', inline: false },
+            { name: 'Time',    value: new Date(ev.ts).toLocaleString(), inline: false }
           ],
-          footer: { text: 'Privacy: no IP, no identifiers. GPC/DNT honored.' }
+          footer: { text: 'Privacy: no raw IP stored; GPC/DNT honored.' }
         }]
       })
     });
-  } catch { /* ignore webhook errors */ }
+  } catch { /* ignore */ }
 }
 
 export default async function handler(req, res) {
@@ -31,13 +34,11 @@ export default async function handler(req, res) {
   const link = await kv.get(`links:${id}`);
   if (!link) return res.status(404).send('Not found');
 
-  // set consent cookie for 1 year
-  const cookie = serialize('analytics_consent', '1', {
+  // set consent cookie (1 year)
+  res.setHeader('Set-Cookie', serialize('analytics_consent', '1', {
     path: '/', maxAge: 60*60*24*365, sameSite: 'Lax', httpOnly: false, secure: true
-  });
-  res.setHeader('Set-Cookie', cookie);
+  }));
 
-  // Log one event immediately after consent
   const ev = {
     ts: Date.now(),
     device: parseDevice(req.headers['user-agent'] || ''),
@@ -46,8 +47,7 @@ export default async function handler(req, res) {
   };
   await kv.rpush(`events:${id}`, JSON.stringify(ev));
 
-  // Notify Discord (first click right after consent)
-  await sendWebhook(ev, id, link);
+  await notifyClick({ id, link, ev, req });
 
   res.status(204).end();
 }
