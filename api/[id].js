@@ -1,10 +1,14 @@
+// api/[id].js
 import { kv } from '../lib/kv.js';
 import { parseDevice, hashIp, privacySignals, getIp } from '../lib/util.js';
 
 async function notifyClick({ id, link, ev, req }) {
   const hook = process.env.DISCORD_WEBHOOK_URL;
   if (!hook) return;
-  const lang = (req.headers['accept-language'] || '').split(',')[0] || 'unknown';
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const host  = req.headers['x-forwarded-host'] || req.headers.host;
+  const lang  = (req.headers['accept-language'] || '').split(',')[0] || 'unknown';
+
   try {
     await fetch(hook, {
       method: 'POST',
@@ -12,18 +16,18 @@ async function notifyClick({ id, link, ev, req }) {
       body: JSON.stringify({
         embeds: [{
           title: 'Click recorded',
-          description: `**Short:** ${req.headers['x-forwarded-proto'] || 'https'}://${req.headers['x-forwarded-host'] || req.headers.host}/api/${id}\n**Target:** <${link.url}>`,
+          description: `**Short:** ${proto}://${host}/api/${id}\n**Target:** <${link.url}>`,
           fields: [
-            { name: 'Device',  value: String(ev.device || 'unknown'), inline: true },
-            { name: 'Lang',    value: lang, inline: true },
-            { name: 'Referrer',value: ev.referer || '—', inline: false },
-            { name: 'Time',    value: new Date(ev.ts).toLocaleString(), inline: false }
+            { name: 'Device',   value: String(ev.device || 'unknown'), inline: true },
+            { name: 'Language', value: lang, inline: true },
+            { name: 'Referrer', value: ev.referer || '—', inline: false },
+            { name: 'Time',     value: new Date(ev.ts).toLocaleString(), inline: false }
           ],
-          footer: { text: 'Privacy: no raw IP stored; GPC/DNT honored.' }
+          footer: { text: 'Privacy: no raw IP stored; GPC/DNT respected.' }
         }]
       })
     });
-  } catch { /* ignore */ }
+  } catch {}
 }
 
 export default async function handler(req, res) {
@@ -33,12 +37,12 @@ export default async function handler(req, res) {
   const link = await kv.get(`links:${id}`);
   if (!link) return res.status(404).send('Not found');
 
-  // Honor GPC/DNT → no logging, no alerts
+  // Respect GPC/DNT: if enabled in the browser, we skip logging and notifications.
   if (privacySignals(req)) {
     res.writeHead(302, { Location: link.url }); return res.end();
   }
 
-  // Consent cookie?
+  // Check consent cookie
   const cookies = Object.fromEntries(
     (req.headers.cookie || '').split(';').map(c => c.trim().split('=')).filter(([k]) => k)
   );
@@ -57,7 +61,7 @@ export default async function handler(req, res) {
     res.writeHead(302, { Location: link.url }); return res.end();
   }
 
-  // Show consent interstitial
+  // No consent yet — show interstitial
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.end(`<!doctype html><html><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -69,11 +73,10 @@ button{padding:10px 16px;border-radius:8px;border:1px solid #ddd;background:#fff
 .primary{background:#0b74de;color:#fff;border-color:#0b74de}
 </style></head><body><div class="card">
 <h2>Allow anonymous analytics?</h2>
-<p>We collect device category, timestamp, a hashed IP, language, and referrer to count clicks.
-No names, emails, or precise location. GPC/DNT respected.</p>
+<p>We collect device category, language, referrer, timestamp, and a hashed IP to count clicks. No names, emails, or precise location. GPC/DNT respected.</p>
 <div><button onclick="decline()">Decline & continue</button>
 <button class="primary" onclick="allow()">Allow & continue</button></div>
-<p style="color:#666;font-size:12px;margin-top:10px;">Revoke by clearing this cookie.</p>
+<p style="color:#666;font-size:12px;margin-top:10px;">Revoke anytime by clearing this cookie.</p>
 </div>
 <script>
 async function allow(){await fetch('/api/consent/${id}',{method:'POST',credentials:'include'});location.href=${JSON.stringify(link.url)}}
